@@ -1,0 +1,36 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  TEAM_LEAD
+  MEMBER
+}
+
+model User {
+  id           String   @id @default(uuid())
+  fullName     String
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(MEMBER)
+  isActive     Boolean  @default(true)
+
+  // Org hierarchy (who this user reports to)
+  managerId    String?
+  manager      User?    @relation("UserManager", fields: [managerId], references: [id], onDelete: SetNull)
+  reportees    User[]   @relation("UserManager")
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([email])
+  @@index([role])
+  @@index([managerId])
+}

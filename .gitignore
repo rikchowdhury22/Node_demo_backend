@@ -1,0 +1,50 @@
+# ======================
+# ENV
+# ======================
+.env
+.env.*
+!.env.example
+
+# ======================
+# Dependencies
+# ======================
+node_modules/
+
+# ======================
+# Prisma Generated Client
+# ======================
+src/generated/prisma/
+
+# ======================
+# Build Output
+# ======================
+dist/
+build/
+
+# ======================
+# Logs
+# ======================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# ======================
+# OS Files
+# ======================
+.DS_Store
+Thumbs.db
+
+# ======================
+# Editors
+# ======================
+.vscode/
+.idea/
+
+# ======================
+# Temp / Cache
+# ======================
+.cache/
+*.tmp
+*.temp
