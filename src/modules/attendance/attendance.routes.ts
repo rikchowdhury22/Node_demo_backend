@@ -1,10 +1,10 @@
 import { Router } from "express";
-import { any, z } from "zod";
-import { requireAuth } from "../../middlewares/auth";
+import { z } from "zod";
+import { requireAuth, requireRoles } from "../../middlewares/auth";
 import { Attendance } from "./attendance.model";
 import { prisma } from "../../db/prisma";
-import { requireRoles } from "../../middlewares/auth";
 import mongoose from "mongoose";
+import { evaluateAndUpdateAttendance } from "./attendance.service";
 
 const router = Router();
 
@@ -41,12 +41,11 @@ function toISTISOString(d: Date): string {
   return `${y}-${m}-${day}T${hh}:${mm}:${ss}.${ms}+05:30`;
 }
 
-
 /**
  * ✅ Common Punch Endpoint (unlimited punches)
  * - Upsert Attendance by (userId, date)
  * - Append a punch with {at: now}
- * - Status stays "PENDING" for now (we'll compute later)
+ * - Status will be computed immediately after punch (policy-driven)
  */
 router.post("/punch", requireAuth, async (req, res) => {
   const schema = z.object({
@@ -60,27 +59,31 @@ router.post("/punch", requireAuth, async (req, res) => {
   const dayKey = date ?? toISTDateKey(now);
 
   const updated = await Attendance.findOneAndUpdate(
-  { userId, date: dayKey },
-  {
-    $setOnInsert: { userId, date: dayKey, status: "PENDING" },
-    $push: { punches: { at: now } },
-    $set: { updatedAt: now },
-  },
-  { upsert: true, returnDocument: "after" }
-).lean();
+    { userId, date: dayKey },
+    {
+      $setOnInsert: { userId, date: dayKey, status: "PENDING" },
+      $push: { punches: { at: now } },
+      $set: { updatedAt: now },
+    },
+    { upsert: true, returnDocument: "after" }
+  ).lean();
 
-    const punchesRaw = (updated?.punches ?? [])
+  // ✅ NEW: compute status after punch
+  await evaluateAndUpdateAttendance(userId, dayKey);
+  const finalDoc = await Attendance.findOne({ userId, date: dayKey }).lean();
+
+  const punchesRaw = (updated?.punches ?? [])
     .map((p: any) => ({
-        id: String(p._id),
-        at: new Date(p.at),
+      id: String(p._id),
+      at: new Date(p.at),
     }))
     .sort((a: any, b: any) => a.at.getTime() - b.at.getTime());
 
-    const punchCount = punchesRaw.length;
-    const inPunchAt = punchCount >= 1 ? punchesRaw[0].at : null;
-    const outPunchAt = punchCount >= 2 ? punchesRaw[punchCount - 1].at : null;
+  const punchCount = punchesRaw.length;
+  const inPunchAt = punchCount >= 1 ? punchesRaw[0].at : null;
+  const outPunchAt = punchCount >= 2 ? punchesRaw[punchCount - 1].at : null;
 
-    return res.status(201).json({
+  return res.status(201).json({
     message: "Punch recorded",
     userId,
     date: dayKey, // IST date key already
@@ -92,12 +95,14 @@ router.post("/punch", requireAuth, async (req, res) => {
 
     // full punch log (IST formatted)
     punches: punchesRaw.map((p: any) => ({
-        id: p.id,
-        at: toISTISOString(p.at),
+      id: p.id,
+      at: toISTISOString(p.at),
     })),
 
-    status: updated?.status ?? "PENDING",
-    });
+    // ✅ evaluated status + computed block
+    status: finalDoc?.status ?? updated?.status ?? "PENDING",
+    computed: finalDoc?.computed ?? null,
+  });
 });
 
 /**
@@ -133,7 +138,7 @@ router.get("/", requireAuth, async (req, res) => {
       where: { managerId: me },
       select: { id: true },
     });
-    allowedUserIds = [me, ...reportees.map(r => r.id)];
+    allowedUserIds = [me, ...reportees.map((r) => r.id)];
   } else {
     allowedUserIds = [me];
   }
@@ -158,11 +163,7 @@ router.get("/", requireAuth, async (req, res) => {
 
   const [total, docs] = await Promise.all([
     Attendance.countDocuments(filter),
-    Attendance.find(filter)
-      .sort({ date: -1, updatedAt: -1 })
-      .skip(skip)
-      .limit(_limit)
-      .lean(),
+    Attendance.find(filter).sort({ date: -1, updatedAt: -1 }).skip(skip).limit(_limit).lean(),
   ]);
 
   const items = (docs ?? []).map((d: any) => {
@@ -183,12 +184,12 @@ router.get("/", requireAuth, async (req, res) => {
       outPunchAt: outPunchAt ? toISTISOString(outPunchAt) : null,
       punches: punchesRaw.map((p: any) => ({ id: p.id, at: toISTISOString(p.at) })),
       status: d.status ?? "PENDING",
+      computed: d.computed ?? null,
     };
   });
 
   return res.json({ page: _page, limit: _limit, total, items });
 });
-
 
 router.patch(
   "/:userId/:date/punches/:punchId",
@@ -224,6 +225,10 @@ router.patch(
       return res.status(404).json({ message: "Punch not found for this user/date" });
     }
 
+    // ✅ NEW: re-evaluate after punch edit
+    await evaluateAndUpdateAttendance(userId, date);
+    const finalDoc = await Attendance.findOne({ userId, date }).lean();
+
     const punchesRaw = (updated.punches ?? [])
       .map((p: any) => ({ id: String(p._id), at: new Date(p.at) }))
       .sort((a: any, b: any) => a.at.getTime() - b.at.getTime());
@@ -240,11 +245,12 @@ router.patch(
       inPunchAt: inPunchAt ? toISTISOString(inPunchAt) : null,
       outPunchAt: outPunchAt ? toISTISOString(outPunchAt) : null,
       punches: punchesRaw.map((p: any) => ({ id: p.id, at: toISTISOString(p.at) })),
-      status: updated.status ?? "PENDING",
+
+      status: finalDoc?.status ?? updated.status ?? "PENDING",
+      computed: finalDoc?.computed ?? null,
     });
   }
 );
-
 
 router.delete(
   "/:userId/:date/punches/:punchId",
@@ -270,6 +276,10 @@ router.delete(
       return res.status(404).json({ message: "Attendance not found for this user/date" });
     }
 
+    // ✅ NEW: re-evaluate after punch delete
+    await evaluateAndUpdateAttendance(userId, date);
+    const finalDoc = await Attendance.findOne({ userId, date }).lean();
+
     const punchesRaw = (updated.punches ?? [])
       .map((p: any) => ({ id: String(p._id), at: new Date(p.at) }))
       .sort((a: any, b: any) => a.at.getTime() - b.at.getTime());
@@ -286,7 +296,9 @@ router.delete(
       inPunchAt: inPunchAt ? toISTISOString(inPunchAt) : null,
       outPunchAt: outPunchAt ? toISTISOString(outPunchAt) : null,
       punches: punchesRaw.map((p: any) => ({ id: p.id, at: toISTISOString(p.at) })),
-      status: updated.status ?? "PENDING",
+
+      status: finalDoc?.status ?? updated.status ?? "PENDING",
+      computed: finalDoc?.computed ?? null,
     });
   }
 );

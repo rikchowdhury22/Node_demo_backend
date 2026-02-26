@@ -6,6 +6,7 @@ import authRoutes from "./modules/auth/auth.routes";
 import userRoutes from "./modules/users/users.routes";
 import health from "./modules/health/health.routes";
 import attendanceRoutes from "./modules/attendance/attendance.routes";
+import attendancePolicyRoutes from "./modules/attendance/attendancePolicy.routes";
 
 export function createApp() {
   const app = express();
@@ -18,6 +19,7 @@ export function createApp() {
   app.use("/users", userRoutes);
   app.use(("/"), health);
   app.use("/attendance", attendanceRoutes);
+  app.use("/attendance", attendancePolicyRoutes);
 
 
   return app;
