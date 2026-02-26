@@ -6,7 +6,7 @@ import { requireAuth, requireRoles } from "../../middlewares/auth";
 
 const router = Router();
 
-// ✅ Admin creates users (in-house)
+// ✅ Admin & Manager creates users (in-house)
 router.post(
   "/register",
   requireAuth,
